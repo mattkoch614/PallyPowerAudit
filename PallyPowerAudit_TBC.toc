@@ -1,0 +1,10 @@
+## Interface: 20504
+## Title: PallyPowerAudit
+## Notes: Companion changelog for PallyPower assignment changes.
+## Author: local
+## Version: 0.1.0
+## SavedVariables: PallyPowerAuditDB
+## OptionalDeps: PallyPower
+
+PallyPowerAudit.lua
+
