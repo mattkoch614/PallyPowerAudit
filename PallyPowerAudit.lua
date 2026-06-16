@@ -3,10 +3,24 @@ local ADDON_NAME = ...
 local Audit = CreateFrame("Frame")
 local MAX_ENTRIES = 200
 local isHooked = false
+local LOG_WINDOW_WIDTH = 380
+local LOG_WINDOW_HEIGHT = 240
+local LOG_WINDOW_PADDING = 12
+local LOG_WINDOW_TARGETS = {
+    "PallyPowerFrame",
+    "PallyPowerMainFrame",
+    "PallyPower",
+}
 
 local DEFAULT_DB = {
     entries = {},
     showRaw = false,
+    windowShown = true,
+    windowDocked = true,
+    windowPoint = nil,
+    windowRelativePoint = nil,
+    windowX = nil,
+    windowY = nil,
 }
 
 local PREFIX_CANDIDATES = {
@@ -69,6 +83,9 @@ local ASSIGNMENT_COMMANDS = {
     CLEAR = true,
 }
 
+local logWindow
+local logWindowMessageFrame
+
 local function EnsureDB()
     if type(PallyPowerAuditDB) ~= "table" then
         PallyPowerAuditDB = {}
@@ -83,6 +100,240 @@ local function EnsureDB()
             end
         end
     end
+end
+
+local function FormatTimestampLine(entry)
+    local timestamp = date("%H:%M:%S", entry.time or time())
+    local line = string.format("%s %s: %s", timestamp, entry.sender or "unknown", entry.summary or entry.message or "")
+
+    if PallyPowerAuditDB.showRaw then
+        line = line .. string.format(" | raw=%s:%s", tostring(entry.prefix), tostring(entry.message))
+    end
+
+    return line
+end
+
+local function FindDockTarget()
+    for index = 1, #LOG_WINDOW_TARGETS do
+        local target = _G[LOG_WINDOW_TARGETS[index]]
+        if type(target) == "table" and target.IsShown and target:IsShown() then
+            return target
+        end
+    end
+
+    if EnumerateFrames then
+        for frame in EnumerateFrames() do
+            if frame ~= logWindow and frame.IsShown and frame:IsShown() then
+                local name = frame.GetName and frame:GetName()
+                if type(name) == "string" and name ~= "PallyPowerAuditLogWindow" and name:find("PallyPower", 1, true) then
+                    return frame
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function SaveWindowPosition()
+    if not logWindow then
+        return
+    end
+
+    local point, _, relativePoint, xOfs, yOfs = logWindow:GetPoint(1)
+    PallyPowerAuditDB.windowPoint = point
+    PallyPowerAuditDB.windowRelativePoint = relativePoint
+    PallyPowerAuditDB.windowX = xOfs
+    PallyPowerAuditDB.windowY = yOfs
+end
+
+local function ApplyWindowLayout(preserveCurrent)
+    if not logWindow then
+        return
+    end
+
+    if PallyPowerAuditDB.windowDocked then
+        local dockTarget = FindDockTarget()
+        if dockTarget then
+            logWindow:ClearAllPoints()
+            logWindow:SetPoint("TOPLEFT", dockTarget, "TOPRIGHT", 8, 0)
+            return
+        end
+    end
+
+    if PallyPowerAuditDB.windowPoint and PallyPowerAuditDB.windowRelativePoint and PallyPowerAuditDB.windowX and PallyPowerAuditDB.windowY then
+        logWindow:ClearAllPoints()
+        logWindow:SetPoint(PallyPowerAuditDB.windowPoint, UIParent, PallyPowerAuditDB.windowRelativePoint, PallyPowerAuditDB.windowX, PallyPowerAuditDB.windowY)
+        return
+    end
+
+    if preserveCurrent then
+        return
+    end
+
+    logWindow:ClearAllPoints()
+    logWindow:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+end
+
+local function AddWindowMessage(line)
+    if not logWindowMessageFrame then
+        return
+    end
+
+    logWindowMessageFrame:AddMessage(line, 1, 1, 1)
+end
+
+local function PopulateWindowFromDB()
+    EnsureDB()
+
+    if not logWindowMessageFrame then
+        return
+    end
+
+    for index = #PallyPowerAuditDB.entries, 1, -1 do
+        AddWindowMessage(FormatTimestampLine(PallyPowerAuditDB.entries[index]))
+    end
+end
+
+local function CreateLogWindow()
+    if logWindow then
+        return logWindow
+    end
+
+    local frame = CreateFrame("Frame", "PallyPowerAuditLogWindow", UIParent, "BackdropTemplate")
+    frame:SetSize(LOG_WINDOW_WIDTH, LOG_WINDOW_HEIGHT)
+    frame:SetFrameStrata("DIALOG")
+    frame:SetClampedToScreen(true)
+    frame:SetMovable(true)
+    frame:SetResizable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    if frame.SetResizeBounds then
+        frame:SetResizeBounds(300, 180, 900, 700)
+    else
+        if frame.SetMinResize then
+            frame:SetMinResize(300, 180)
+        end
+        if frame.SetMaxResize then
+            frame:SetMaxResize(900, 700)
+        end
+    end
+    frame:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true,
+        tileSize = 16,
+        edgeSize = 16,
+        insets = { left = 5, right = 5, top = 5, bottom = 5 },
+    })
+    frame:SetBackdropColor(0.05, 0.05, 0.06, 0.96)
+
+    frame:SetScript("OnDragStart", function(self)
+        self:StartMoving()
+    end)
+
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        PallyPowerAuditDB.windowDocked = false
+        SaveWindowPosition()
+    end)
+
+    frame:SetScript("OnShow", function()
+        if logWindowMessageFrame then
+            logWindowMessageFrame:ScrollToBottom()
+        end
+    end)
+
+    frame:SetScript("OnUpdate", function(self, elapsed)
+        if not PallyPowerAuditDB.windowDocked or not self:IsShown() then
+            return
+        end
+
+        self._dockCheck = (self._dockCheck or 0) + elapsed
+        if self._dockCheck < 0.5 then
+            return
+        end
+
+        self._dockCheck = 0
+        ApplyWindowLayout(true)
+    end)
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", LOG_WINDOW_PADDING, -10)
+    title:SetText("PallyPowerAudit")
+
+    local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+    subtitle:SetText("Audit log")
+
+    local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    closeButton:SetPoint("TOPRIGHT", 2, 2)
+    closeButton:SetScript("OnClick", function()
+        PallyPowerAuditDB.windowShown = false
+        frame:Hide()
+    end)
+
+    local messageFrame = CreateFrame("ScrollingMessageFrame", nil, frame)
+    messageFrame:SetPoint("TOPLEFT", LOG_WINDOW_PADDING, -54)
+    messageFrame:SetPoint("BOTTOMRIGHT", -24, LOG_WINDOW_PADDING)
+    messageFrame:SetFontObject(GameFontHighlightSmall)
+    messageFrame:SetJustifyH("LEFT")
+    messageFrame:SetFading(false)
+    messageFrame:SetMaxLines(MAX_ENTRIES)
+    messageFrame:SetSpacing(2)
+    messageFrame:EnableMouseWheel(true)
+    messageFrame:SetScript("OnMouseWheel", function(self, delta)
+        if delta > 0 then
+            self:ScrollUp()
+        else
+            self:ScrollDown()
+        end
+    end)
+
+    local resizeGrip = CreateFrame("Button", nil, frame)
+    resizeGrip:SetSize(16, 16)
+    resizeGrip:SetPoint("BOTTOMRIGHT", -4, 4)
+    resizeGrip:SetScript("OnMouseDown", function(self)
+        self:GetParent():StartSizing("BOTTOMRIGHT")
+    end)
+    resizeGrip:SetScript("OnMouseUp", function(self)
+        self:GetParent():StopMovingOrSizing()
+        SaveWindowPosition()
+    end)
+    resizeGrip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+    resizeGrip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+
+    logWindow = frame
+    logWindowMessageFrame = messageFrame
+    ApplyWindowLayout(false)
+    PopulateWindowFromDB()
+
+    if PallyPowerAuditDB.windowShown ~= false then
+        frame:Show()
+    else
+        frame:Hide()
+    end
+
+    return frame
+end
+
+local function ShowLogWindow()
+    EnsureDB()
+    CreateLogWindow()
+    PallyPowerAuditDB.windowShown = true
+    ApplyWindowLayout(false)
+    logWindow:Show()
+    if logWindowMessageFrame then
+        logWindowMessageFrame:ScrollToBottom()
+    end
+end
+
+local function HideLogWindow()
+    if logWindow then
+        logWindow:Hide()
+    end
+    EnsureDB()
+    PallyPowerAuditDB.windowShown = false
 end
 
 local function Print(message)
@@ -231,7 +482,10 @@ local function AddEntry(prefix, message, channel, sender)
         table.remove(PallyPowerAuditDB.entries)
     end
 
-    Print(string.format("%s: %s", entry.sender, entry.summary))
+    AddWindowMessage(FormatTimestampLine(entry))
+    if logWindowMessageFrame then
+        logWindowMessageFrame:ScrollToBottom()
+    end
 end
 
 local function TryHookPallyPower()
@@ -281,24 +535,10 @@ end
 local function ShowEntries()
     EnsureDB()
 
+    ShowLogWindow()
+
     if #PallyPowerAuditDB.entries == 0 then
         Print("no entries yet")
-        return
-    end
-
-    Print("recent entries:")
-
-    local limit = math.min(#PallyPowerAuditDB.entries, 20)
-    for index = 1, limit do
-        local entry = PallyPowerAuditDB.entries[index]
-        local timestamp = date("%H:%M:%S", entry.time or time())
-        local line = string.format("%s %s: %s", timestamp, entry.sender or "unknown", entry.summary or entry.message or "")
-
-        if PallyPowerAuditDB.showRaw then
-            line = line .. string.format(" | raw=%s:%s", tostring(entry.prefix), tostring(entry.message))
-        end
-
-        Print(line)
     end
 end
 
@@ -309,13 +549,46 @@ local function HandleSlashCommand(input)
 
     if command == "clear" then
         PallyPowerAuditDB.entries = {}
+        if logWindow then
+            logWindow:Hide()
+            logWindow = nil
+            logWindowMessageFrame = nil
+        end
+        CreateLogWindow()
+        ShowLogWindow()
         Print("cleared local audit history")
         return
     end
 
     if command == "raw" then
         PallyPowerAuditDB.showRaw = not PallyPowerAuditDB.showRaw
+        if logWindow then
+            logWindow:Hide()
+            logWindow = nil
+            logWindowMessageFrame = nil
+        end
+        CreateLogWindow()
+        ShowLogWindow()
         Print("raw logging is now " .. (PallyPowerAuditDB.showRaw and "on" or "off"))
+        return
+    end
+
+    if command == "hide" then
+        HideLogWindow()
+        return
+    end
+
+    if command == "window" then
+        if PallyPowerAuditDB.windowDocked then
+            PallyPowerAuditDB.windowDocked = false
+            ShowLogWindow()
+            SaveWindowPosition()
+            Print("window is now undocked")
+        else
+            PallyPowerAuditDB.windowDocked = true
+            ShowLogWindow()
+            Print("window is now docked when PallyPower is visible")
+        end
         return
     end
 
@@ -324,6 +597,8 @@ local function HandleSlashCommand(input)
         Print("PallyPower SendMessage: " .. (type(PallyPower) == "table" and type(PallyPower.SendMessage) == "function" and "yes" or "no"))
         Print("local hook: " .. (isHooked and "yes" or "no"))
         Print("raw logging: " .. (PallyPowerAuditDB.showRaw and "on" or "off"))
+        Print("window shown: " .. (PallyPowerAuditDB.windowShown and "yes" or "no"))
+        Print("window docked: " .. (PallyPowerAuditDB.windowDocked and "yes" or "no"))
         return
     end
 
@@ -337,10 +612,21 @@ Audit:SetScript("OnEvent", function(_, event, ...)
             EnsureDB()
             RegisterPrefixes()
             TryHookPallyPower()
-            Print("loaded. Use /ppaudit to show recent entries.")
+            CreateLogWindow()
+            Print("loaded. Use /ppaudit to manage the audit window.")
         end
         if loadedAddon == "PallyPower" then
             TryHookPallyPower()
+            if logWindow then
+                ApplyWindowLayout(true)
+            end
+        end
+        return
+    end
+
+    if event == "PLAYER_LOGIN" then
+        if logWindow then
+            ApplyWindowLayout(true)
         end
         return
     end
@@ -354,6 +640,7 @@ Audit:SetScript("OnEvent", function(_, event, ...)
 end)
 
 Audit:RegisterEvent("ADDON_LOADED")
+Audit:RegisterEvent("PLAYER_LOGIN")
 Audit:RegisterEvent("CHAT_MSG_ADDON")
 
 SLASH_PALLYPOWERAUDIT1 = "/ppaudit"
