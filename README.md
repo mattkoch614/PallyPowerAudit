@@ -6,6 +6,8 @@ This addon is intentionally separate from PallyPower so it can be installed alon
 
 Only the person who wants the changelog needs to install PallyPowerAudit. Other raid members only need regular PallyPower for their assignment changes to be visible.
 
+By default, audit messages appear in a dedicated in-game audit window instead of the chat frame. The window will try to dock beside PallyPower when a visible PallyPower frame can be found; otherwise it behaves like a small movable companion panel.
+
 ## Install for Local Testing
 
 1. Copy the `PallyPowerAudit` folder into your WoW AddOns directory:
@@ -18,11 +20,13 @@ Only the person who wants the changelog needs to install PallyPowerAudit. Other 
 
 ## Commands
 
-- `/ppaudit` - show recent audit entries
-- `/ppaudit show` - show recent audit entries
+- `/ppaudit` - show the audit window
+- `/ppaudit show` - show the audit window
+- `/ppaudit hide` - hide the audit window
+- `/ppaudit window` - toggle docking to PallyPower when it is visible
 - `/ppaudit clear` - clear local audit history
 - `/ppaudit raw` - toggle raw addon message logging
-- `/ppaudit status` - show whether PallyPower is loaded and whether the local hook attached
+- `/ppaudit status` - show whether PallyPower is loaded, whether the local hook attached, and whether the window is shown/docked
 
 ## Current Scope
 
